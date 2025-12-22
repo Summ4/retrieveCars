@@ -16,8 +16,8 @@ RUN npm install
 # Copy application files
 COPY index.mjs ./
 
-# Expose any ports if needed (not required for this app, but good practice)
-# EXPOSE 3000
+# Expose port for health checks (Railway will set PORT env variable)
+EXPOSE 3000
 
 # Run the application
 CMD ["node", "index.mjs"]
