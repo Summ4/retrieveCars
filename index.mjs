@@ -3,6 +3,7 @@
 //mandatory header - X-Website-Key : myhome
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
+import http from 'http';
 
 // Add a request interceptor to log the full URL
 // axios.interceptors.request.use(request => {
@@ -77,6 +78,26 @@ let StoreRealEstateIds = new Map();
 let isFirstRun = true;
 
 console.log("worker started!!!");
+
+// Start HTTP server for Railway healthchecks
+const PORT = process.env.PORT || 3000;
+const server = http.createServer((req, res) => {
+    if (req.url === '/' || req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            status: 'ok', 
+            service: 'myhome-automation',
+            uptime: process.uptime()
+        }));
+    } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+    }
+});
+
+server.listen(PORT, () => {
+    console.log(`Health check server running on port ${PORT}`);
+});
 
 const fetchCars = async () => {
 
