@@ -1,0 +1,8 @@
+services:
+  myhome-automation:
+    build: .
+    container_name: myhome-automation
+    restart: unless-stopped
+    # Production: no volume mounts - code is baked into Docker image
+    # This is what you'll use for cloud deployment
+

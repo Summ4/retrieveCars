@@ -1,0 +1,16 @@
+services:
+  myhome-automation:
+    build: .
+    container_name: myhome-automation
+    restart: unless-stopped
+    # Mount code directory for development (changes apply without rebuild)
+    # Comment out this volume if you want to use the built-in code from image
+    volumes:
+      - ./index.mjs:/app/index.mjs
+    # Uncomment and set if you need environment variables
+    # environment:
+    #   - NODE_ENV=production
+    # If you need to persist logs, uncomment the volumes section
+    # volumes:
+    #   - ./logs:/app/logs
+
