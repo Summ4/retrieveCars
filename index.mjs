@@ -19,17 +19,17 @@ const FILTERS = {
     deal_types: 1,
     real_estate_types: 1,
     cities: 1,
-    urbans: [23,29,53,59,2,6,10,78,24],
-    districts: [3,4,5,1],
+    urbans: [23, 29, 53, 59, 2, 6, 10, 78, 24],
+    districts: [3, 4, 5, 1],
     currency_id: 2,
     price_from: 70000,
-    price_to: 1300000,
+    price_to: 130000,
     area_from: 90,
     area_to: 150,
     area_types: 1,
     conditions: 1,
-    // bedroom_types: 3,
-    room_types: [4,3,2,1],
+    bedroom_types: 3,
+    room_types: 4,
     floor_from: 4,
     floor_to: 30,
     not_first: 1,
@@ -51,13 +51,13 @@ const retryRequest = async (requestFn, maxRetries = 5, delay = 1000) => {
         try {
             return await requestFn();
         } catch (error) {
-            const isNetworkError = error.code === 'EAI_AGAIN' || 
-                                  error.code === 'ECONNRESET' || 
-                                  error.code === 'ETIMEDOUT' ||
-                                  error.code === 'ENOTFOUND' ||
-                                  error.message?.includes('getaddrinfo') ||
-                                  (error.response === undefined && error.request !== undefined);
-            
+            const isNetworkError = error.code === 'EAI_AGAIN' ||
+                error.code === 'ECONNRESET' ||
+                error.code === 'ETIMEDOUT' ||
+                error.code === 'ENOTFOUND' ||
+                error.message?.includes('getaddrinfo') ||
+                (error.response === undefined && error.request !== undefined);
+
             if (isNetworkError && attempt < maxRetries) {
                 const waitTime = delay * Math.pow(2, attempt - 1); // Exponential backoff
                 console.log(`Network error (attempt ${attempt}/${maxRetries}): ${error.message || error.code}. Retrying in ${waitTime}ms...`);
@@ -83,14 +83,14 @@ console.log("worker started!!!");
 const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
     if (req.url === '/' || req.url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-            status: 'ok', 
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({
+            status: 'ok',
             service: 'myhome-automation',
             uptime: process.uptime()
         }));
     } else {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.writeHead(404, {'Content-Type': 'text/plain'});
         res.end('Not Found');
     }
 });
@@ -105,7 +105,7 @@ const fetchCars = async () => {
 
     try {
         // Retry count API call with network error handling
-        const countResponse = await retryRequest(() => 
+        const countResponse = await retryRequest(() =>
             axios.get(API_COUNT_URL, {
                 params: {...FILTERS, page: 1},
                 headers: {
@@ -188,13 +188,13 @@ const fetchCars = async () => {
         }
 
     } catch (error) {
-        const isNetworkError = error.code === 'EAI_AGAIN' || 
-                              error.code === 'ECONNRESET' || 
-                              error.code === 'ETIMEDOUT' ||
-                              error.code === 'ENOTFOUND' ||
-                              error.message?.includes('getaddrinfo') ||
-                              (error.response === undefined && error.request !== undefined);
-        
+        const isNetworkError = error.code === 'EAI_AGAIN' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ENOTFOUND' ||
+            error.message?.includes('getaddrinfo') ||
+            (error.response === undefined && error.request !== undefined);
+
         if (isNetworkError) {
             console.error('Network error (DNS/Connection issue):', error.code || error.message);
             console.log('Will retry on next interval. Data preserved.');
