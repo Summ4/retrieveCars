@@ -1,7 +1,7 @@
 services:
-  myhome-automation:
+  autowini-car-watcher:
     build: .
-    container_name: myhome-automation
+    container_name: autowini-car-watcher
     restart: unless-stopped
     # Production: no volume mounts - code is baked into Docker image
     # This is what you'll use for cloud deployment

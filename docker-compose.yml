@@ -1,7 +1,7 @@
 services:
-  myhome-automation:
+  autowini-car-watcher:
     build: .
-    container_name: myhome-automation
+    container_name: autowini-car-watcher
     restart: unless-stopped
     # Mount code directory for development (changes apply without rebuild)
     # Comment out this volume if you want to use the built-in code from image

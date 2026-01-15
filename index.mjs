@@ -1,49 +1,33 @@
-//count - https://api-statements.tnet.ge/v1/statements/count?deal_types=1&real_estate_types=1&cities=1&districts=6&currency_id=1&urbans=63&page=1
-//info  - https://api-statements.tnet.ge/v1/statements?deal_types=1&real_estate_types=1&cities=1&districts=6&currency_id=1&urbans=63&page=1
-//mandatory header - X-Website-Key : myhome
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import http from 'http';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
-// Add a request interceptor to log the full URL
-// axios.interceptors.request.use(request => {
-//   const fullUrl = `${request.baseURL || ''}${request.url}?${new URLSearchParams(request.params).toString()}`;
-//   console.log('Requesting:', fullUrl);
-//   return request;
-// });
-
-const API_URL = 'https://api-statements.tnet.ge/v1/statements';
-const API_COUNT_URL = 'https://api-statements.tnet.ge/v1/statements/count';
-const FILTERS = {
-
-    deal_types: 1,
-    real_estate_types: 1,
-    cities: 1,
-    urbans: [23, 29, 53, 59, 2, 6, 10, 78, 24],
-    districts: [3, 4, 5, 1],
-    currency_id: 2,
-    price_from: 70000,
-    price_to: 130000,
-    area_from: 90,
-    area_to: 150,
-    area_types: 1,
-    conditions: 1,
-    bedroom_types: 3,
-    room_types: 4,
-    floor_from: 4,
-    floor_to: 30,
-    not_first: 1,
-    page: 1
-
+const AUTOWINI_API_URL = 'https://v2api.autowini.com/items/cars';
+const AUTOWINI_API_PARAMS = {
+    pageSize: 30,
+    sorting: 'lowPrice',
+    make: 'C0040',
+    subModel: 'C1840',
+    modelYearFrom: 2016,
+    priceTo: 12000,
+    fuelType: 'C060'
 };
-
-const headers = {
-    'X-Website-Key': 'myhome'
+const AUTOWINI_BASE_URL = 'https://www.autowini.com';
+const AUTOWINI_DETAIL_PREFIX = `${AUTOWINI_BASE_URL}/Cars/`;
+const ENCAR_API_URL = 'https://api.encar.com/search/car/list/premium?count=true&q=(And.Year.range(201600..)._.Hidden.N._.(C.CarType.N._.(C.Manufacturer.%EC%95%84%EC%9A%B0%EB%94%94._.ModelGroup.A7.))_.FuelType.%EB%94%94%EC%A0%A4._.Price.range(..1800).)&sr=%7CPriceAsc%7C0%7C20';
+const ENCAR_DETAIL_PREFIX = 'https://fem.encar.com/cars/detail/';
+const ENCAR_HEADERS = {
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Origin': 'https://www.encar.com',
+    'Referer': 'https://www.encar.com/',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 };
+const ENCAR_PROXY_URL = process.env.ENCAR_PROXY_URL || '';
 
 // Configure axios with timeout and retry settings
 axios.defaults.timeout = 30000; // 30 seconds timeout
-axios.defaults.headers.common['X-Website-Key'] = 'myhome';
 
 // Retry function with exponential backoff
 const retryRequest = async (requestFn, maxRetries = 5, delay = 1000) => {
@@ -69,15 +53,17 @@ const retryRequest = async (requestFn, maxRetries = 5, delay = 1000) => {
     }
 };
 
-const TELEGRAM_TOKEN = '8555603450:AAH0uU4o2KVq9Y_8ktZ2BnC2w4eJBFGo11s'; // Replace with your Telegram bot token
-const CHAT_ID = '-4694745286'; // Replace with the user's chat ID
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '8349569989:AAHiHgy2WThd0_ssOqg1JvX2xnkQx6xuS80';
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-4549901364';
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, {polling: true});
 
-let StoreRealEstateIds = new Map();
-let isFirstRun = true;
+let storedAutowiniIds = new Map();
+let storedEncarIds = new Map();
+let isFirstRunAutowini = true;
+let isFirstRunEncar = true;
 
-console.log("worker started!!!");
+console.log('car watcher started!!!');
 
 // Start HTTP server for Railway healthchecks
 const PORT = process.env.PORT || 3000;
@@ -86,7 +72,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, {'Content-Type': 'application/json'});
         res.end(JSON.stringify({
             status: 'ok',
-            service: 'myhome-automation',
+            service: 'autowini-car-watcher',
             uptime: process.uptime()
         }));
     } else {
@@ -99,94 +85,119 @@ server.listen(PORT, () => {
     console.log(`Health check server running on port ${PORT}`);
 });
 
-const fetchCars = async () => {
+const formatPrice = (price) => {
+    if (price === null || price === undefined) {
+        return 'N/A';
+    }
+    return `$${Number(price).toLocaleString()}`;
+};
 
-    console.log("loop started!!!");
+const formatMileage = (mileage) => {
+    if (mileage === null || mileage === undefined) {
+        return 'N/A';
+    }
+    return `${Number(mileage).toLocaleString()} km`;
+};
+
+const formatValue = (value) => value || 'N/A';
+const formatEncarWonPrice = (priceInTenThousandKrw) => {
+    if (priceInTenThousandKrw === null || priceInTenThousandKrw === undefined) {
+        return 'N/A';
+    }
+
+    const krw = Number(priceInTenThousandKrw) * 10000;
+    if (!Number.isFinite(krw)) {
+        return 'N/A';
+    }
+
+    const millions = krw / 1_000_000;
+    return `${millions.toFixed(1)} million won`;
+};
+
+const buildAutowiniDetailUrl = (detailUrl) => {
+    if (!detailUrl) {
+        return AUTOWINI_BASE_URL;
+    }
+
+    const trimmed = detailUrl.startsWith('/items/')
+        ? detailUrl.replace('/items/', '')
+        : detailUrl.replace(/^\//, '');
+
+    return `${AUTOWINI_DETAIL_PREFIX}${trimmed}/cars-detail`;
+};
+
+const buildEncarDetailUrl = (carId) => `https://fem.encar.com/cars/detail/${carId}`;
+
+const fetchAutowiniCars = async () => {
+    console.log('polling autowini cars...');
 
     try {
-        // Retry count API call with network error handling
-        const countResponse = await retryRequest(() =>
-            axios.get(API_COUNT_URL, {
-                params: {...FILTERS, page: 1},
-                headers: {
-                    'X-Website-Key': 'myhome'
-                }
+        const response = await retryRequest(() =>
+            axios.get(AUTOWINI_API_URL, {
+                params: AUTOWINI_API_PARAMS
             })
         );
 
-        // Initialize page number
-        let currentPage = 1;
-        let lastPage = countResponse.data.data.last_page;
-        console.log("total pages", countResponse.data.data.last_page);
-        console.log("total statements", countResponse.data.data.total);
-
-        do {
-            // Retry API call with network error handling
-            const response = await retryRequest(() =>
-                axios.get(API_URL, {
-                    params: {...FILTERS, page: currentPage},
-                    headers: {
-                        'X-Website-Key': 'myhome'
-                    }
-                })
-            );
-
-            const realestates = response.data.data.data;
-
-
-            //console.log(typeof(realestates));
-
-            for (let realEstate of realestates) {
-                const realEstateId = realEstate.id;
-                const price = realEstate.price['2'].price_total;
-                const priceSquare = realEstate.price['2'].price_square;
-                const realEstateUrl = `https://www.myhome.ge/pr/${realEstateId}/details/`;
-                const title = realEstate.dynamic_title;
-
-                if (isFirstRun) {
-                    // Only save car IDs during the first iteration
-                    StoreRealEstateIds.set(realEstateId, price);
-                } else {
-                    if (!StoreRealEstateIds.has(realEstateId)) {
-                        // New car ID found
-                        StoreRealEstateIds.set(realEstateId, price);
-                        try {
-                            await bot.sendMessage(CHAT_ID,
-                                `დაემატა ახალი:\n` +
-                                `ფასი: $${price}\n` +
-                                `კვ.მ: $${priceSquare}\n` +
-                                `${realEstateUrl}`);
-                        } catch (telegramError) {
-                            console.error('Error sending Telegram message:', telegramError.message);
-                            // Continue processing even if Telegram fails
-                        }
-                    } else if (StoreRealEstateIds.get(realEstateId) != price) {
-                        // Price change detected
-                        const previousPrice = StoreRealEstateIds.get(realEstateId);
-                        const priceDifference = price - previousPrice;
-                        StoreRealEstateIds.set(realEstateId, price);
-                        try {
-                            await bot.sendMessage(CHAT_ID,
-                                `Price change detected: \n` +
-                                `Previous Price:   $${previousPrice}\n` +
-                                `Current Price:    $${price}\n` +
-                                `Price Difference: $${priceDifference}\n` +
-                                `${realEstateUrl}`);
-                        } catch (telegramError) {
-                            console.error('Error sending Telegram message:', telegramError.message);
-                            // Continue processing even if Telegram fails
-                        }
-                    }
-                }
-            }
-
-            //console.log(currentPage);
-            currentPage++; // Move to the next page
-        } while (currentPage <= lastPage);
-        if (isFirstRun) {
-            isFirstRun = false; // Reset the flag after the first successful iteration
+        if (response.data?.result !== 'SUCCESS') {
+            console.error('Unexpected API response:', response.data?.result);
+            return;
         }
 
+        const cars = response.data?.data?.items || [];
+        console.log(`autowini items received: ${cars.length}`);
+
+        for (const car of cars) {
+            const carId = car.listingId || car.code;
+            if (!carId) {
+                continue;
+            }
+
+            const price = car.price ?? null;
+            const detailUrl = buildAutowiniDetailUrl(car.detailUrl);
+            const baseMessage =
+                `${car.itemName || 'Car listing'}\n` +
+                `Price: ${formatPrice(price)}\n` +
+                `Mileage: ${formatMileage(car.mileage)}\n` +
+                `Location: ${formatValue(car.locationName)}\n` +
+                `Fuel: ${formatValue(car.fuelType)}\n` +
+                `Transmission: ${formatValue(car.transmissionType)}\n` +
+                `${detailUrl}`;
+
+            if (isFirstRunAutowini) {
+                storedAutowiniIds.set(carId, price);
+                continue;
+            }
+
+            if (!storedAutowiniIds.has(carId)) {
+                storedAutowiniIds.set(carId, price);
+                try {
+                    await bot.sendMessage(CHAT_ID, `New car listed (Autowini):\n${baseMessage}`);
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+                continue;
+            }
+
+            const previousPrice = storedAutowiniIds.get(carId);
+            if (previousPrice !== price) {
+                storedAutowiniIds.set(carId, price);
+                try {
+                    await bot.sendMessage(
+                        CHAT_ID,
+                        `Price change detected (Autowini):\n` +
+                        `${baseMessage}\n` +
+                        `Previous: ${formatPrice(previousPrice)}\n` +
+                        `Current: ${formatPrice(price)}`
+                    );
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+            }
+        }
+
+        if (isFirstRunAutowini) {
+            isFirstRunAutowini = false;
+        }
     } catch (error) {
         const isNetworkError = error.code === 'EAI_AGAIN' ||
             error.code === 'ECONNRESET' ||
@@ -198,22 +209,111 @@ const fetchCars = async () => {
         if (isNetworkError) {
             console.error('Network error (DNS/Connection issue):', error.code || error.message);
             console.log('Will retry on next interval. Data preserved.');
-            // Don't clear data on network errors - just wait for next retry
         } else {
-            console.error('Error fetching real estates:', error.message);
-            // Only reset on non-network errors (API errors, data errors, etc.)
-            // For network errors, we keep the data and retry
+            console.error('Error fetching autowini cars:', error.message);
             if (error.response) {
-                // API returned an error response
                 console.error('API Error:', error.response.status, error.response.statusText);
             }
         }
     }
-
 };
 
-// Run the fetch function every 2 minutes
-setInterval(fetchCars, 1 * 60 * 1000);
+const buildEncarTitle = (car) => {
+    const parts = [car.Manufacturer, car.Model, car.Badge, car.BadgeDetail].filter(Boolean);
+    return parts.length ? parts.join(' ') : 'Car listing';
+};
 
-// Initial fetch to populate storedCarIds
-fetchCars();
+const fetchEncarCars = async () => {
+    console.log('polling encar cars...');
+
+    try {
+        const proxyAgent = ENCAR_PROXY_URL ? new HttpsProxyAgent(ENCAR_PROXY_URL) : null;
+        const response = await retryRequest(() =>
+            axios.get(ENCAR_API_URL, {
+                headers: ENCAR_HEADERS,
+                httpsAgent: proxyAgent || undefined
+            })
+        );
+
+        const cars = response.data?.SearchResults || [];
+        console.log(`encar items received: ${cars.length}`);
+
+        for (const car of cars) {
+            const carId = car.Id;
+            if (!carId) {
+                continue;
+            }
+
+            const price = car.Price ?? null;
+            const detailUrl = buildEncarDetailUrl(carId);
+            const baseMessage =
+                `${buildEncarTitle(car)}\n` +
+                `Price: ${formatEncarWonPrice(price)}\n` +
+                `Mileage: ${formatMileage(car.Mileage)}\n` +
+                `${detailUrl}`;
+
+            if (isFirstRunEncar) {
+                storedEncarIds.set(carId, price);
+                continue;
+            }
+
+            if (!storedEncarIds.has(carId)) {
+                storedEncarIds.set(carId, price);
+                try {
+                    await bot.sendMessage(CHAT_ID, `New car listed (Encar):\n${baseMessage}`);
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+                continue;
+            }
+
+            const previousPrice = storedEncarIds.get(carId);
+            if (previousPrice !== price) {
+                storedEncarIds.set(carId, price);
+                try {
+                    await bot.sendMessage(
+                        CHAT_ID,
+                        `Price change detected (Encar):\n` +
+                        `${baseMessage}\n` +
+                        `Previous: ${formatPrice(previousPrice)}\n` +
+                        `Current: ${formatPrice(price)}`
+                    );
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+            }
+        }
+
+        if (isFirstRunEncar) {
+            isFirstRunEncar = false;
+        }
+    } catch (error) {
+        const isNetworkError = error.code === 'EAI_AGAIN' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ENOTFOUND' ||
+            error.message?.includes('getaddrinfo') ||
+            (error.response === undefined && error.request !== undefined);
+
+        if (isNetworkError) {
+            console.error('Network error (DNS/Connection issue):', error.code || error.message);
+            console.log('Will retry on next interval. Data preserved.');
+        } else {
+            console.error('Error fetching encar cars:', error.message);
+            if (error.response) {
+                console.error('API Error:', error.response.status, error.response.statusText);
+            }
+        }
+    }
+};
+
+const fetchAllCars = async () => {
+    await fetchAutowiniCars();
+    await fetchEncarCars();
+};
+
+// Run the fetch function every minute
+setInterval(fetchAllCars, 1 * 60 * 1000);
+
+// Initial fetch to populate stored ids
+fetchAllCars();

@@ -56,7 +56,7 @@ railway up
    fly deploy
    ```
 
-3. Your app will be live at `https://myhome-automation.fly.dev`
+3. Your app will be live at `https://autowini-car-watcher.fly.dev`
 
 ---
 
@@ -125,9 +125,9 @@ For cloud deployment, use this version without volume mounts:
 
 ```yaml
 services:
-  myhome-automation:
+  autowini-car-watcher:
     build: .
-    container_name: myhome-automation
+    container_name: autowini-car-watcher
     restart: unless-stopped
     # No volume mounts in production - code is baked into image
 ```
