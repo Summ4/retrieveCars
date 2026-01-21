@@ -15,6 +15,7 @@ const AUTOWINI_API_PARAMS = {
 };
 const AUTOWINI_BASE_URL = 'https://www.autowini.com';
 const AUTOWINI_DETAIL_PREFIX = `${AUTOWINI_BASE_URL}/Cars/`;
+const AUCTIONWINI_API_URL = 'https://v2api.auctionwini.com/items/live-auction?vehicleHierarchy=C0040:C1840&sort=watchCount,desc&size=50';
 const ENCAR_API_URL = 'https://api.encar.com/search/car/list/premium?count=true&q=(And.Year.range(201600..)._.Hidden.N._.(C.CarType.N._.(C.Manufacturer.%EC%95%84%EC%9A%B0%EB%94%94._.ModelGroup.A7.))_.FuelType.%EB%94%94%EC%A0%A4._.Price.range(..1800).)&sr=%7CPriceAsc%7C0%7C20';
 const ENCAR_DETAIL_PREFIX = 'https://fem.encar.com/cars/detail/';
 const ENCAR_HEADERS = {
@@ -60,8 +61,10 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, {polling: true});
 
 let storedAutowiniIds = new Map();
 let storedEncarIds = new Map();
+let storedAuctionwiniIds = new Map();
 let isFirstRunAutowini = true;
 let isFirstRunEncar = true;
+let isFirstRunAuctionwini = true;
 
 console.log('car watcher started!!!');
 
@@ -127,6 +130,19 @@ const buildAutowiniDetailUrl = (detailUrl) => {
 };
 
 const buildEncarDetailUrl = (carId) => `https://fem.encar.com/cars/detail/${carId}`;
+
+const formatAuctionStartTime = (timestampSeconds) => {
+    if (!timestampSeconds) {
+        return 'N/A';
+    }
+
+    const date = new Date(Number(timestampSeconds) * 1000);
+    if (Number.isNaN(date.getTime())) {
+        return 'N/A';
+    }
+
+    return date.toLocaleString('en-US', { hour12: false });
+};
 
 const fetchAutowiniCars = async () => {
     console.log('polling autowini cars...');
@@ -307,9 +323,99 @@ const fetchEncarCars = async () => {
     }
 };
 
+const fetchAuctionwiniCars = async () => {
+    console.log('polling auctionwini cars...');
+
+    try {
+        const response = await retryRequest(() => axios.get(AUCTIONWINI_API_URL));
+
+        if (response.data?.result !== 'SUCCESS') {
+            console.error('Unexpected Auctionwini API response:', response.data?.result);
+            return;
+        }
+
+        const cars = response.data?.data?.content || [];
+        console.log(`auctionwini items received: ${cars.length}`);
+
+        for (const car of cars) {
+            const carId = car.itemCode;
+            if (!carId) {
+                continue;
+            }
+
+            const price = car.currentMaxBidPrice ?? null;
+            const imageUrl = Array.isArray(car.imageUrlList) ? car.imageUrlList[0] : null;
+            const baseMessage =
+                `${car.name || 'Car listing'}\n` +
+                `Status: ${formatValue(car.carStatusText)}\n` +
+                `Bid: ${formatPrice(price)}\n` +
+                `Odometer: ${formatMileage(car.odometer)}\n` +
+                `Fuel: ${formatValue(car.fuelTypeText)}\n` +
+                `Engine: ${car.engineVolume ? `${Number(car.engineVolume).toLocaleString()} cc` : 'N/A'}\n` +
+                `Lot: ${formatValue(car.lotNo)}\n` +
+                `Auction start: ${formatAuctionStartTime(car.auctionStartDateTime)}\n` +
+                (imageUrl ? `${imageUrl}\n` : '') +
+                (car.videoUrl ? `${car.videoUrl}` : '');
+
+            if (isFirstRunAuctionwini) {
+                storedAuctionwiniIds.set(carId, price);
+                continue;
+            }
+
+            if (!storedAuctionwiniIds.has(carId)) {
+                storedAuctionwiniIds.set(carId, price);
+                try {
+                    await bot.sendMessage(CHAT_ID, `New car listed (Auctionwini):\n${baseMessage}`);
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+                continue;
+            }
+
+            const previousPrice = storedAuctionwiniIds.get(carId);
+            if (previousPrice !== price) {
+                storedAuctionwiniIds.set(carId, price);
+                try {
+                    await bot.sendMessage(
+                        CHAT_ID,
+                        `Bid change detected (Auctionwini):\n` +
+                        `${baseMessage}\n` +
+                        `Previous: ${formatPrice(previousPrice)}\n` +
+                        `Current: ${formatPrice(price)}`
+                    );
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+            }
+        }
+
+        if (isFirstRunAuctionwini) {
+            isFirstRunAuctionwini = false;
+        }
+    } catch (error) {
+        const isNetworkError = error.code === 'EAI_AGAIN' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ENOTFOUND' ||
+            error.message?.includes('getaddrinfo') ||
+            (error.response === undefined && error.request !== undefined);
+
+        if (isNetworkError) {
+            console.error('Network error (DNS/Connection issue):', error.code || error.message);
+            console.log('Will retry on next interval. Data preserved.');
+        } else {
+            console.error('Error fetching auctionwini cars:', error.message);
+            if (error.response) {
+                console.error('API Error:', error.response.status, error.response.statusText);
+            }
+        }
+    }
+};
+
 const fetchAllCars = async () => {
     await fetchAutowiniCars();
     await fetchEncarCars();
+    await fetchAuctionwiniCars();
 };
 
 // Run the fetch function every minute
