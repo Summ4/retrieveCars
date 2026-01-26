@@ -16,6 +16,7 @@ const AUTOWINI_API_PARAMS = {
 const AUTOWINI_BASE_URL = 'https://www.autowini.com';
 const AUTOWINI_DETAIL_PREFIX = `${AUTOWINI_BASE_URL}/Cars/`;
 const AUCTIONWINI_API_URL = 'https://v2api.auctionwini.com/items/live-auction?vehicleHierarchy=C0040:C1840&sort=watchCount,desc&size=50';
+const COPART_API_URL = 'https://www.copart.com/public/lots/search-results';
 const ENCAR_API_URL = 'https://api.encar.com/search/car/list/premium?count=true&q=(And.Year.range(201600..)._.Hidden.N._.(C.CarType.N._.(C.Manufacturer.%EC%95%84%EC%9A%B0%EB%94%94._.ModelGroup.A7.))_.FuelType.%EB%94%94%EC%A0%A4._.Price.range(..1800).)&sr=%7CPriceAsc%7C0%7C20';
 const ENCAR_DETAIL_PREFIX = 'https://fem.encar.com/cars/detail/';
 const ENCAR_HEADERS = {
@@ -26,6 +27,8 @@ const ENCAR_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 };
 const ENCAR_PROXY_URL = process.env.ENCAR_PROXY_URL || '';
+const COPART_COOKIE = process.env.COPART_COOKIE || '';
+const COPART_XSRF_TOKEN = process.env.COPART_XSRF_TOKEN || '';
 
 // Configure axios with timeout and retry settings
 axios.defaults.timeout = 30000; // 30 seconds timeout
@@ -62,9 +65,11 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, {polling: true});
 let storedAutowiniIds = new Map();
 let storedEncarIds = new Map();
 let storedAuctionwiniIds = new Map();
+let storedCopartIds = new Map();
 let isFirstRunAutowini = true;
 let isFirstRunEncar = true;
 let isFirstRunAuctionwini = true;
+let isFirstRunCopart = true;
 
 console.log('car watcher started!!!');
 
@@ -130,6 +135,7 @@ const buildAutowiniDetailUrl = (detailUrl) => {
 };
 
 const buildEncarDetailUrl = (carId) => `https://fem.encar.com/cars/detail/${carId}`;
+const buildCopartDetailUrl = (lotNumber) => lotNumber ? `https://www.copart.com/lot/${lotNumber}` : 'https://www.copart.com';
 
 const formatAuctionStartTime = (timestampSeconds) => {
     if (!timestampSeconds) {
@@ -412,10 +418,144 @@ const fetchAuctionwiniCars = async () => {
     }
 };
 
+const fetchCopartCars = async () => {
+    console.log('polling copart cars...');
+
+    // if (!COPART_COOKIE || !COPART_XSRF_TOKEN) {
+    //     console.log('Copart skipped: missing COPART_COOKIE or COPART_XSRF_TOKEN.');
+    //     return;
+    // }
+
+    try {
+        const payload = {
+            query: ['audi'],
+            filter: {
+                YEAR: ['lot_year:[2016 TO 2027]'],
+                MAKE: ['lot_make_desc:"AUDI"'],
+                MODL: ['manufacturer_model_desc:"A7"'],
+                FUEL: ['fuel_type_desc:"DIESEL"']
+            },
+            sort: ['salelight_priority asc', 'auction_date_type desc', 'auction_date_utc asc'],
+            page: 0,
+            size: 20,
+            start: 0,
+            watchListOnly: false,
+            freeFormSearch: true,
+            hideImages: false,
+            defaultSort: false,
+            specificRowProvided: false,
+            displayName: '',
+            searchName: '',
+            backUrl: '',
+            includeTagByField: {},
+            rawParams: {}
+        };
+
+        const response = await retryRequest(() =>
+            axios.post(COPART_API_URL, payload, {
+                headers: {
+                    accept: 'application/json, text/plain, */*',
+                    'accept-language': 'en-US,en;q=0.9',
+                    'content-type': 'application/json',
+                    origin: 'https://www.copart.com',
+                    referer: 'https://www.copart.com/lotSearchResults',
+                    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+                    'x-requested-with': 'XMLHttpRequest',
+                    'x-xsrf-token': COPART_XSRF_TOKEN,
+                    cookie: COPART_COOKIE
+                }
+            })
+        );
+
+        if (response.data?.returnCode !== 1) {
+            console.error('Unexpected Copart API response:', response.data?.returnCodeDesc);
+            return;
+        }
+
+        const cars = response.data?.data?.results?.content || [];
+        console.log(`copart items received: ${cars.length}`);
+
+        for (const car of cars) {
+            const carId = car.ln || car.lotNumberStr;
+            if (!carId) {
+                continue;
+            }
+
+            const price = car.dynamicLotDetails?.currentBid ?? car.hb ?? null;
+            const detailUrl = buildCopartDetailUrl(car.lotNumberStr || car.ln);
+            const odometerKm = car.orr ? Math.round(Number(car.orr) * 1.60934) : null;
+            const baseMessage =
+                `${car.ld || 'Car listing'}\n` +
+                `Status: ${formatValue(car.lcd)}\n` +
+                `Bid: ${formatPrice(price)}\n` +
+                `Odometer: ${odometerKm ? formatMileage(odometerKm) : 'N/A'}\n` +
+                `Fuel: ${formatValue(car.ft)}\n` +
+                `Drive: ${formatValue(car.drv)}\n` +
+                `Location: ${formatValue(car.yn)}\n` +
+                `Damage: ${formatValue(car.dd)}\n` +
+                (car.tims ? `${car.tims}\n` : '') +
+                `${detailUrl}`;
+
+            if (isFirstRunCopart) {
+                storedCopartIds.set(carId, price);
+                continue;
+            }
+
+            if (!storedCopartIds.has(carId)) {
+                storedCopartIds.set(carId, price);
+                try {
+                    await bot.sendMessage(CHAT_ID, `New car listed (Copart):\n${baseMessage}`);
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+                continue;
+            }
+
+            const previousPrice = storedCopartIds.get(carId);
+            if (previousPrice !== price) {
+                storedCopartIds.set(carId, price);
+                try {
+                    await bot.sendMessage(
+                        CHAT_ID,
+                        `Bid change detected (Copart):\n` +
+                        `${baseMessage}\n` +
+                        `Previous: ${formatPrice(previousPrice)}\n` +
+                        `Current: ${formatPrice(price)}`
+                    );
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+            }
+        }
+
+        if (isFirstRunCopart) {
+            isFirstRunCopart = false;
+        }
+    } catch (error) {
+        const isNetworkError = error.code === 'EAI_AGAIN' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ENOTFOUND' ||
+            error.message?.includes('getaddrinfo') ||
+            (error.response === undefined && error.request !== undefined);
+
+        if (isNetworkError) {
+            console.error('Network error (DNS/Connection issue):', error.code || error.message);
+            console.log('Will retry on next interval. Data preserved.');
+        } else {
+            console.error('Error fetching copart cars:', error.message);
+            if (error.response) {
+                console.error('API Error:', error.response.status, error.response.statusText);
+            }
+        }
+    }
+};
+
 const fetchAllCars = async () => {
     await fetchAutowiniCars();
     await fetchEncarCars();
     await fetchAuctionwiniCars();
+    await fetchCopartCars();
 };
 
 // Run the fetch function every minute
