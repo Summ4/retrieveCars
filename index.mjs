@@ -17,6 +17,7 @@ const AUTOWINI_BASE_URL = 'https://www.autowini.com';
 const AUTOWINI_DETAIL_PREFIX = `${AUTOWINI_BASE_URL}/Cars/`;
 const AUCTIONWINI_API_URL = 'https://v2api.auctionwini.com/items/live-auction?vehicleHierarchy=C0040:C1840&sort=watchCount,desc&size=50';
 const COPART_API_URL = 'https://www.copart.com/public/lots/search-results';
+const IAAI_SEARCH_URL = 'https://www.iaai.com/Search';
 const ENCAR_API_URL = 'https://api.encar.com/search/car/list/premium?count=true&q=(And.Year.range(201600..)._.Hidden.N._.(C.CarType.N._.(C.Manufacturer.%EC%95%84%EC%9A%B0%EB%94%94._.ModelGroup.A7.))_.FuelType.%EB%94%94%EC%A0%A4._.Price.range(..1800).)&sr=%7CPriceAsc%7C0%7C20';
 const ENCAR_DETAIL_PREFIX = 'https://fem.encar.com/cars/detail/';
 const ENCAR_HEADERS = {
@@ -29,6 +30,7 @@ const ENCAR_HEADERS = {
 const ENCAR_PROXY_URL = process.env.ENCAR_PROXY_URL || '';
 const COPART_COOKIE = process.env.COPART_COOKIE || '';
 const COPART_XSRF_TOKEN = process.env.COPART_XSRF_TOKEN || '';
+const IAAI_COOKIE = process.env.IAAI_COOKIE || '';
 
 // Configure axios with timeout and retry settings
 axios.defaults.timeout = 30000; // 30 seconds timeout
@@ -66,10 +68,12 @@ let storedAutowiniIds = new Map();
 let storedEncarIds = new Map();
 let storedAuctionwiniIds = new Map();
 let storedCopartIds = new Map();
+let storedIaaiIds = new Map();
 let isFirstRunAutowini = true;
 let isFirstRunEncar = true;
 let isFirstRunAuctionwini = true;
 let isFirstRunCopart = true;
+let isFirstRunIaai = true;
 
 console.log('car watcher started!!!');
 
@@ -136,6 +140,66 @@ const buildAutowiniDetailUrl = (detailUrl) => {
 
 const buildEncarDetailUrl = (carId) => `https://fem.encar.com/cars/detail/${carId}`;
 const buildCopartDetailUrl = (lotNumber) => lotNumber ? `https://www.copart.com/lot/${lotNumber}` : 'https://www.copart.com';
+const buildIaaiDetailUrl = (inventoryId) => inventoryId ? `https://www.iaai.com/VehicleDetail/${inventoryId}` : 'https://www.iaai.com';
+
+const extractIaaiNumber = (value) => {
+    if (!value) {
+        return null;
+    }
+
+    const digits = value.toString().replace(/[^0-9]/g, '');
+    if (!digits) {
+        return null;
+    }
+
+    const parsed = Number(digits);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const extractIaaiMatch = (regex, text) => {
+    const match = regex.exec(text);
+    return match ? match[1].trim() : null;
+};
+
+const parseIaaiVehicles = (html) => {
+    if (!html || typeof html !== 'string') {
+        return [];
+    }
+
+    const linkRegex = /<a href="\/VehicleDetail\/(\d+~[A-Z]+)"[^>]*>([^<]+)<\/a>/g;
+    const matches = [];
+    let match;
+
+    while ((match = linkRegex.exec(html)) !== null) {
+        matches.push({
+            id: match[1],
+            title: match[2]?.trim(),
+            index: match.index
+        });
+    }
+
+    return matches.map((entry, index) => {
+        const endIndex = index + 1 < matches.length ? matches[index + 1].index : html.length;
+        const chunk = html.slice(entry.index, endIndex);
+        const odometerMiles = extractIaaiNumber(
+            extractIaaiMatch(/title="Odometer:\s*([^"]+?)\s*mi"/i, chunk)
+        );
+        const odometerKm = odometerMiles ? Math.round(odometerMiles * 1.60934) : null;
+
+        return {
+            id: entry.id,
+            title: entry.title || 'Car listing',
+            stockNumber: extractIaaiMatch(/title="Stock #:\s*([^"]+)"/i, chunk),
+            primaryDamage: extractIaaiMatch(/title="Primary Damage:\s*([^"]+)"/i, chunk),
+            lossType: extractIaaiMatch(/title="Loss:\s*([^"]+)"/i, chunk),
+            fuelType: extractIaaiMatch(/title="Fuel Type:\s*([^"]+)"/i, chunk),
+            branch: extractIaaiMatch(/title="Branch:[^"]*">\s*<a[^>]*>([^<]+)<\/a>/i, chunk)
+                || extractIaaiMatch(/title="Branch:\s*([^"]+)"/i, chunk),
+            odometerKm,
+            imageUrl: extractIaaiMatch(/data-src="(https:\/\/vis\.iaai\.com\/resizer\?[^"]+)"/i, chunk)
+        };
+    });
+};
 
 const formatAuctionStartTime = (timestampSeconds) => {
     if (!timestampSeconds) {
@@ -551,11 +615,113 @@ const fetchCopartCars = async () => {
     }
 };
 
+const fetchIaaiCars = async () => {
+    console.log('polling iaai cars...');
+
+    // if (!IAAI_COOKIE) {
+    //     console.log('IAAI skipped: missing IAAI_COOKIE.');
+    //     return;
+    // }
+
+    try {
+        const payload = {
+            Searches: [
+                { Facets: [{ Group: 'FuelTypeDesc', Value: 'Diesel', ForAnalytics: false }], FullSearch: null, LongRanges: null },
+                { Facets: [{ Group: 'Make', Value: 'AUDI', ForAnalytics: false }], FullSearch: null, LongRanges: null },
+                { Facets: [{ Group: 'Model', Value: 'A7', ForAnalytics: false }], FullSearch: null, LongRanges: null },
+                { Facets: null, FullSearch: 'audi', LongRanges: null },
+                { Facets: null, FullSearch: null, LongRanges: [{ From: 2016, Name: 'Year', To: 2027 }] }
+            ],
+            ZipCode: '',
+            miles: 0,
+            PageSize: 100,
+            CurrentPage: 1,
+            Sort: [{ IsGeoSort: false, SortField: 'TenantSortOrder', IsDescending: false }],
+            ShowRecommendations: false,
+            SaleStatusFilters: [{ SaleStatus: 1, IsSelected: true }],
+            BidStatusFilters: [{ BidStatus: 6, IsSelected: true }]
+        };
+
+        const response = await retryRequest(() =>
+            axios.post(`${IAAI_SEARCH_URL}?c=${Date.now()}`, payload, {
+                headers: {
+                    accept: '*/*',
+                    'accept-language': 'en-US,en;q=0.9',
+                    'content-type': 'application/json',
+                    origin: 'https://www.iaai.com',
+                    referer: 'https://www.iaai.com/Search',
+                    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+                    cookie: IAAI_COOKIE
+                }
+            })
+        );
+
+        const html = response.data;
+        const cars = parseIaaiVehicles(html);
+        console.log(`iaai items received: ${cars.length}`);
+
+        for (const car of cars) {
+            const carId = car.id;
+            if (!carId) {
+                continue;
+            }
+
+            const detailUrl = buildIaaiDetailUrl(carId);
+            const baseMessage =
+                `${car.title}\n` +
+                `Odometer: ${car.odometerKm ? formatMileage(car.odometerKm) : 'N/A'}\n` +
+                `Fuel: ${formatValue(car.fuelType)}\n` +
+                `Damage: ${formatValue(car.primaryDamage)}\n` +
+                `Loss: ${formatValue(car.lossType)}\n` +
+                `Location: ${formatValue(car.branch)}\n` +
+                `Stock #: ${formatValue(car.stockNumber)}\n` +
+                (car.imageUrl ? `${car.imageUrl}\n` : '') +
+                `${detailUrl}`;
+
+            if (isFirstRunIaai) {
+                storedIaaiIds.set(carId, null);
+                continue;
+            }
+
+            if (!storedIaaiIds.has(carId)) {
+                storedIaaiIds.set(carId, null);
+                try {
+                    await bot.sendMessage(CHAT_ID, `New car listed (IAAI):\n${baseMessage}`);
+                } catch (telegramError) {
+                    console.error('Error sending Telegram message:', telegramError.message);
+                }
+            }
+        }
+
+        if (isFirstRunIaai) {
+            isFirstRunIaai = false;
+        }
+    } catch (error) {
+        const isNetworkError = error.code === 'EAI_AGAIN' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ENOTFOUND' ||
+            error.message?.includes('getaddrinfo') ||
+            (error.response === undefined && error.request !== undefined);
+
+        if (isNetworkError) {
+            console.error('Network error (DNS/Connection issue):', error.code || error.message);
+            console.log('Will retry on next interval. Data preserved.');
+        } else {
+            console.error('Error fetching iaai cars:', error.message);
+            if (error.response) {
+                console.error('API Error:', error.response.status, error.response.statusText);
+            }
+        }
+    }
+};
+
 const fetchAllCars = async () => {
     await fetchAutowiniCars();
     await fetchEncarCars();
     await fetchAuctionwiniCars();
     await fetchCopartCars();
+    await fetchIaaiCars();
 };
 
 // Run the fetch function every minute
